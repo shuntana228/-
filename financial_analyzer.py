@@ -117,10 +117,153 @@ class FinancialAnalyzer:
 
         self.historical_data = df
 
+    def calculate_roic(self):
+        """
+        ROIC (Return on Invested Capital) を計算
+        投下資本利益率 = NOPAT / 投下資本
+
+        Returns:
+            float: ROIC (%)、計算できない場合はNone
+        """
+        try:
+            if self.financials is None or self.balance_sheet is None:
+                return None
+
+            # NOPATの計算: Operating Income × (1 - Tax Rate)
+            # 最新の財務データを使用（列の最初の要素）
+            if 'Operating Income' in self.financials.index:
+                operating_income = self.financials.loc['Operating Income'].iloc[0]
+            elif 'EBIT' in self.financials.index:
+                operating_income = self.financials.loc['EBIT'].iloc[0]
+            else:
+                return None
+
+            # 実効税率を計算
+            if 'Tax Provision' in self.financials.index and 'Pretax Income' in self.financials.index:
+                tax_provision = self.financials.loc['Tax Provision'].iloc[0]
+                pretax_income = self.financials.loc['Pretax Income'].iloc[0]
+                if pretax_income != 0:
+                    tax_rate = abs(tax_provision / pretax_income)
+                else:
+                    tax_rate = 0.25  # デフォルト税率
+            else:
+                tax_rate = 0.25  # デフォルト税率25%
+
+            nopat = operating_income * (1 - tax_rate)
+
+            # 投下資本の計算: Total Equity + Total Debt - Cash
+            if 'Total Equity Gross Minority Interest' in self.balance_sheet.index:
+                total_equity = self.balance_sheet.loc['Total Equity Gross Minority Interest'].iloc[0]
+            elif 'Stockholders Equity' in self.balance_sheet.index:
+                total_equity = self.balance_sheet.loc['Stockholders Equity'].iloc[0]
+            else:
+                return None
+
+            # 総負債を取得
+            if 'Total Debt' in self.balance_sheet.index:
+                total_debt = self.balance_sheet.loc['Total Debt'].iloc[0]
+            elif 'Long Term Debt' in self.balance_sheet.index and 'Current Debt' in self.balance_sheet.index:
+                total_debt = self.balance_sheet.loc['Long Term Debt'].iloc[0] + self.balance_sheet.loc['Current Debt'].iloc[0]
+            else:
+                total_debt = 0
+
+            # 現金を取得
+            if 'Cash And Cash Equivalents' in self.balance_sheet.index:
+                cash = self.balance_sheet.loc['Cash And Cash Equivalents'].iloc[0]
+            else:
+                cash = 0
+
+            invested_capital = total_equity + total_debt - cash
+
+            if invested_capital <= 0:
+                return None
+
+            roic = (nopat / invested_capital) * 100
+
+            return roic
+
+        except Exception as e:
+            print(f"⚠️  ROIC計算エラー: {e}")
+            return None
+
+    def calculate_wacc(self):
+        """
+        WACC (Weighted Average Cost of Capital) を計算
+        加重平均資本コスト = (E/V × Re) + (D/V × Rd × (1-T))
+
+        Returns:
+            float: WACC (%)、計算できない場合はNone
+        """
+        try:
+            if not self.info or self.balance_sheet is None:
+                return None
+
+            # 時価総額（株主資本の市場価値）
+            market_cap = self.info.get('marketCap', 0)
+            if market_cap == 0:
+                return None
+
+            # 総負債を取得
+            if 'Total Debt' in self.balance_sheet.index:
+                total_debt = self.balance_sheet.loc['Total Debt'].iloc[0]
+            elif 'Long Term Debt' in self.balance_sheet.index and 'Current Debt' in self.balance_sheet.index:
+                total_debt = self.balance_sheet.loc['Long Term Debt'].iloc[0] + self.balance_sheet.loc['Current Debt'].iloc[0]
+            else:
+                total_debt = 0
+
+            # 企業価値
+            enterprise_value = market_cap + total_debt
+
+            if enterprise_value <= 0:
+                return None
+
+            # 株主資本コスト（Re）の推定
+            # 簡易的にCAPMを使用: Re = Rf + β × (Rm - Rf)
+            # ここでは、より単純に過去のリターンとボラティリティから推定
+            beta = self.info.get('beta', 1.0)
+            risk_free_rate = 0.03  # 3%と仮定（米国10年債利回りの近似値）
+            market_risk_premium = 0.08  # 8%と仮定（歴史的な株式リスクプレミアム）
+
+            cost_of_equity = risk_free_rate + beta * market_risk_premium
+
+            # 負債コスト（Rd）の計算
+            # Interest Expense / Total Debt
+            if self.financials is not None and 'Interest Expense' in self.financials.index and total_debt > 0:
+                interest_expense = abs(self.financials.loc['Interest Expense'].iloc[0])
+                cost_of_debt = interest_expense / total_debt
+            else:
+                # 推定値を使用（投資適格社債の平均利回り）
+                cost_of_debt = 0.04  # 4%と仮定
+
+            # 実効税率
+            if self.financials is not None and 'Tax Provision' in self.financials.index and 'Pretax Income' in self.financials.index:
+                tax_provision = self.financials.loc['Tax Provision'].iloc[0]
+                pretax_income = self.financials.loc['Pretax Income'].iloc[0]
+                if pretax_income != 0:
+                    tax_rate = abs(tax_provision / pretax_income)
+                else:
+                    tax_rate = 0.25
+            else:
+                tax_rate = 0.25  # デフォルト税率25%
+
+            # WACCの計算
+            wacc = (market_cap / enterprise_value * cost_of_equity +
+                   total_debt / enterprise_value * cost_of_debt * (1 - tax_rate)) * 100
+
+            return wacc
+
+        except Exception as e:
+            print(f"⚠️  WACC計算エラー: {e}")
+            return None
+
     def get_company_info(self):
         """企業情報を取得"""
         if not self.info:
             return {}
+
+        # ROICとWACCを計算
+        roic = self.calculate_roic()
+        wacc = self.calculate_wacc()
 
         info_dict = {
             '企業名': self.info.get('longName', 'N/A'),
@@ -132,6 +275,8 @@ class FinancialAnalyzer:
             'PBR': round(self.info.get('priceToBook', 0), 2) if self.info.get('priceToBook') else 'N/A',
             '配当利回り': f"{self.info.get('dividendYield', 0) * 100:.2f}%" if self.info.get('dividendYield') else 'N/A',
             'ROE': f"{self.info.get('returnOnEquity', 0) * 100:.2f}%" if self.info.get('returnOnEquity') else 'N/A',
+            'ROIC': f"{roic:.2f}%" if roic is not None else 'N/A',
+            'WACC': f"{wacc:.2f}%" if wacc is not None else 'N/A',
         }
 
         return info_dict
@@ -171,10 +316,10 @@ class FinancialAnalyzer:
         self.calculate_technical_indicators()
 
         # 図のサイズを設定
-        fig = plt.figure(figsize=(20, 14))
+        fig = plt.figure(figsize=(20, 17))
 
         # グリッド設定
-        gs = fig.add_gridspec(4, 2, hspace=0.3, wspace=0.3)
+        gs = fig.add_gridspec(5, 2, hspace=0.3, wspace=0.3)
 
         company_name = self.info.get('longName', self.ticker_code) if self.info else self.ticker_code
         fig.suptitle(f'Financial Analysis: {company_name} ({self.ticker_symbol})',
@@ -297,6 +442,82 @@ class FinancialAnalyzer:
 
         ax7.text(0.1, 0.5, stats_text, fontsize=11, verticalalignment='center',
                 fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+
+        # 8. ROIC vs WACC 比較グラフ
+        ax8 = fig.add_subplot(gs[4, 0])
+        roic = self.calculate_roic()
+        wacc = self.calculate_wacc()
+
+        if roic is not None and wacc is not None:
+            # バーグラフで表示
+            metrics = ['ROIC', 'WACC']
+            values = [roic, wacc]
+            colors_bar = ['#2ecc71' if roic > wacc else '#e74c3c', '#3498db']
+
+            bars = ax8.bar(metrics, values, color=colors_bar, alpha=0.7, edgecolor='black', linewidth=2)
+
+            # 値をバーの上に表示
+            for bar, value in zip(bars, values):
+                height = bar.get_height()
+                ax8.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{value:.2f}%',
+                        ha='center', va='bottom', fontsize=12, fontweight='bold')
+
+            # 基準線を追加
+            ax8.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+
+            # 差分を表示
+            spread = roic - wacc
+            spread_text = f"Spread: {spread:+.2f}%"
+            status_text = "Value Creating" if spread > 0 else "Value Destroying"
+            status_color = '#2ecc71' if spread > 0 else '#e74c3c'
+
+            ax8.text(0.5, 0.95, spread_text, transform=ax8.transAxes,
+                    fontsize=12, ha='center', va='top',
+                    bbox=dict(boxstyle='round', facecolor=status_color, alpha=0.3))
+            ax8.text(0.5, 0.88, status_text, transform=ax8.transAxes,
+                    fontsize=11, ha='center', va='top', fontweight='bold',
+                    color=status_color)
+
+            ax8.set_title('ROIC vs WACC Analysis', fontsize=14, fontweight='bold')
+            ax8.set_ylabel('Rate (%)', fontsize=12)
+            ax8.grid(True, alpha=0.3, axis='y')
+        else:
+            ax8.text(0.5, 0.5, 'ROIC/WACC data not available',
+                    transform=ax8.transAxes, fontsize=12,
+                    ha='center', va='center')
+            ax8.set_title('ROIC vs WACC Analysis', fontsize=14, fontweight='bold')
+            ax8.axis('off')
+
+        # 9. 財務指標サマリー
+        ax9 = fig.add_subplot(gs[4, 1])
+        ax9.axis('off')
+
+        # 財務指標を取得
+        info = self.get_company_info()
+
+        financial_text = f"""
+        Financial Metrics Summary:
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        PER:               {info.get('PER', 'N/A')}
+        PBR:               {info.get('PBR', 'N/A')}
+        ROE:               {info.get('ROE', 'N/A')}
+        ROIC:              {info.get('ROIC', 'N/A')}
+        WACC:              {info.get('WACC', 'N/A')}
+
+        Dividend Yield:    {info.get('配当利回り', 'N/A')}
+
+        Market Cap:        {info.get('時価総額', 'N/A')}
+        Sector:            {info.get('セクター', 'N/A')}
+
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        Enterprise Value Creation:
+        ROIC > WACC = Value Creating ✓
+        ROIC < WACC = Value Destroying ✗
+        """
+
+        ax9.text(0.1, 0.5, financial_text, fontsize=11, verticalalignment='center',
+                fontfamily='monospace', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
 
         plt.tight_layout()
 
